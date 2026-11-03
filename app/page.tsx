@@ -3,6 +3,7 @@
 import { useState } from "react";
 import SiteShell, { Brand } from "./components/site-shell";
 import { useLanguage } from "./components/language-provider";
+import VoiceForm from "./components/VoiceForm";
 
 const solutionContent = {
   collect: {
@@ -204,6 +205,7 @@ export default function Home() {
   return (
     <SiteShell>
       <main id="main">
+        <VoiceForm/>
         <section className="hero-section">
           <div className="hero-grid" aria-hidden="true" />
           <div className="container hero-layout">

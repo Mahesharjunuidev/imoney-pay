@@ -1,230 +1,314 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { useLanguage } from "./language-provider";
+import { bankBranches, entityTypes, matchOption, parseServices, parseSpokenDate, serviceOptions } from "./voice-form-utils";
 
-type FormData = {
-  name: string;
+type RequestData = {
+  entityName: string;
+  entityType: string;
+  tsp: string;
+  services: string[];
+  bankName: string;
+  branchName: string;
+  assignedBy: string;
   requestDate: string;
-  category: string;
-  description: string;
 };
-
-type SpeechRecognitionResult = {
-  isFinal: boolean;
-  [index: number]: { transcript: string };
-};
-
-type SpeechRecognitionEvent = {
-  results: SpeechRecognitionResult[];
-};
-
-type SpeechRecognitionInstance = {
+type Field = keyof RequestData;
+type RecognitionEvent = { results: ArrayLike<{ isFinal: boolean; [index: number]: { transcript: string } }> };
+type Recognition = {
   lang: string;
   interimResults: boolean;
-  onresult: ((event: SpeechRecognitionEvent) => void) | null;
-  onerror: (() => void) | null;
+  onresult: ((event: RecognitionEvent) => void) | null;
+  onerror: ((event: { error: string }) => void) | null;
   onend: (() => void) | null;
   start: () => void;
-  stop: () => void;
+  abort: () => void;
 };
-
-type SpeechRecognitionConstructor = new () => SpeechRecognitionInstance;
-
+type RecognitionConstructor = new () => Recognition;
 declare global {
   interface Window {
-    SpeechRecognition?: SpeechRecognitionConstructor;
-    webkitSpeechRecognition?: SpeechRecognitionConstructor;
+    SpeechRecognition?: RecognitionConstructor;
+    webkitSpeechRecognition?: RecognitionConstructor;
   }
 }
 
-const emptyForm: FormData = {
-  name: "",
-  requestDate: "",
-  category: "",
-  description: "",
+const emptyForm: RequestData = {
+  entityName: "", entityType: "", tsp: "", services: [],
+  bankName: "", branchName: "", assignedBy: "", requestDate: "",
 };
+const fieldLabels: Record<Field, string> = {
+  entityName: "Entity Name", entityType: "Entity Type", tsp: "TSP", services: "Services",
+  bankName: "Bank Name", branchName: "Branch Name", assignedBy: "Task Assigned By", requestDate: "Date",
+};
+const fieldOrder = Object.keys(fieldLabels) as Field[];
 
 export default function VoiceForm() {
   const { language, t } = useLanguage();
-  const [form, setForm] = useState<FormData>(emptyForm);
+  const id = useId();
+  const [form, setForm] = useState<RequestData>(emptyForm);
+  const formRef = useRef(form);
   const [status, setStatus] = useState("");
-  const [submitted, setSubmitted] = useState<FormData | null>(null);
+  const [activeField, setActiveField] = useState<Field | null>(null);
+  const [retryFields, setRetryFields] = useState<Field[]>([]);
+  const [errors, setErrors] = useState<Partial<Record<Field, string>>>({});
+  const [submitted, setSubmitted] = useState<RequestData | null>(null);
+  const session = useRef<{ recognition: Recognition | null; cancelled: boolean } | null>(null);
+  const utteranceRef = useRef<SpeechSynthesisUtterance | null>(null);
 
-  function updateField(field: keyof FormData, value: string) {
-    setForm((current) => ({ ...current, [field]: value }));
+  useEffect(() => {
+    return () => {
+      if (session.current) {
+        session.current.cancelled = true;
+        session.current.recognition?.abort();
+        session.current = null;
+      }
+      if (utteranceRef.current) {
+        window.speechSynthesis?.cancel();
+        utteranceRef.current = null;
+      }
+      setActiveField(null);
+      setRetryFields([]);
+      setStatus("");
+    };
+  }, [language]);
+
+  function updateField(field: Field, value: string | string[]) {
+    const next = { ...formRef.current, [field]: value } as RequestData;
+    if (field === "bankName" && value !== formRef.current.bankName) next.branchName = "";
+    formRef.current = next;
+    setForm(next);
+    setSubmitted(null);
+    setErrors((current) => ({ ...current, [field]: undefined }));
   }
 
-  function startVoiceForm() {
-    const SpeechRecognition =
-      window.SpeechRecognition ?? window.webkitSpeechRecognition;
+  function stopVoice(message = t("Voice entry stopped.")) {
+    if (session.current) {
+      session.current.cancelled = true;
+      session.current.recognition?.abort();
+      session.current = null;
+    }
+    if (utteranceRef.current) {
+      window.speechSynthesis?.cancel();
+      utteranceRef.current = null;
+    }
+    setActiveField(null);
+    setStatus(message);
+  }
 
-    if (!SpeechRecognition) {
-      setStatus(
-        t(
-          "Speech recognition is unavailable. Please use Chrome or type your answers.",
-        ),
-      );
+  function startVoice(fields: Field[]) {
+    stopVoice("");
+    setRetryFields([]);
+    const Constructor = window.SpeechRecognition ?? window.webkitSpeechRecognition;
+    if (!Constructor) {
+      setStatus(t("Speech recognition is unavailable. Please use Chrome or type your answers."));
       return;
     }
+    const currentSession = { recognition: null as Recognition | null, cancelled: false };
+    session.current = currentSession;
+    const isCurrent = () => !currentSession.cancelled && session.current === currentSession;
 
-    const questions: { field: keyof FormData; prompt: string }[] = [
-      { field: "name", prompt: t("Please say your name.") },
-      { field: "requestDate", prompt: t("Please say the request date.") },
-      {
-        field: "category",
-        prompt: t("Please say a category: Access, Hardware, or Software."),
-      },
-      { field: "description", prompt: t("Please describe your request.") },
-    ];
-
-    const ask = (index: number) => {
-      if (index >= questions.length) {
-        setStatus(
-          t("Voice entry complete. Review your answers before submitting."),
-        );
+    function ask(index: number) {
+      if (!isCurrent()) return;
+      if (index >= fields.length) {
+        session.current = null;
+        setActiveField(null);
+        setStatus(t("Voice entry complete. Review your answers before submitting."));
         return;
       }
+      const field = fields[index];
+      if (field === "branchName" && !formRef.current.bankName) {
+        ask(index + 1);
+        return;
+      }
+      const options = field === "entityType" ? entityTypes
+        : field === "bankName" ? Object.keys(bankBranches)
+        : field === "branchName" ? bankBranches[formRef.current.bankName] ?? []
+        : field === "services" ? serviceOptions : [];
+      const optional = field === "tsp" || field === "branchName";
+      const prompt = `${t("Please say")} ${t(fieldLabels[field])}. ${options.map(t).join(", ")}${field === "requestDate" ? t("For example, 3 November 2026, or today.") : ""}${optional ? ` ${t("Say skip to leave this blank.")}` : ""}`;
+      setActiveField(field);
+      setStatus(prompt);
+      document.getElementById(`${id}-${field}`)?.focus();
 
-      const question = questions[index];
-      setStatus(question.prompt);
+      function fail(message: string) {
+        if (!isCurrent()) return;
+        setRetryFields(fields.slice(index));
+        stopVoice(message);
+      }
 
-      const utterance = new SpeechSynthesisUtterance(question.prompt);
-      utterance.lang = language === "hi" ? "hi-IN" : "en-US";
-      utterance.onend = () => {
-        const recognition = new SpeechRecognition();
-        recognition.lang = language === "hi" ? "hi-IN" : "en-US";
+      let listening = false;
+      function listen() {
+        if (!isCurrent() || listening) return;
+        listening = true;
+        utteranceRef.current = null;
+        const recognition = new Constructor!();
+        currentSession.recognition = recognition;
+        recognition.lang = language === "hi" ? "hi-IN" : "en-IN";
         recognition.interimResults = false;
-
+        let accepted = false;
         recognition.onresult = (event) => {
-          const answer = event.results[0]?.[0]?.transcript?.trim() ?? "";
-          if (answer) updateField(question.field, answer);
+          if (!isCurrent() || accepted) return;
+          const answer = event.results[0]?.[0]?.transcript.trim() ?? "";
+          if (/^(stop|cancel)$/i.test(answer)) {
+            stopVoice();
+            return;
+          }
+          if (!answer) return;
+          if (answer.length > 150) {
+            fail(t("Answer is too long. Please keep it under 150 characters."));
+            return;
+          }
+          let value: string | string[] | null = answer;
+          if (optional && /^skip$/i.test(answer)) value = "";
+          else if (field === "requestDate") value = parseSpokenDate(answer);
+          else if (field === "services") {
+            value = parseServices(answer);
+            if (!value.length) value = null;
+          } else if (options.length) {
+            const alias = field === "bankName" && /^s\s*\.?b\s*\.?i\.?$/i.test(answer) ? "State Bank of India" : answer;
+            value = matchOption(alias, options) ?? options.find((option) => matchOption(answer, [t(option)])) ?? null;
+          }
+          if (value === null) {
+            fail(field === "requestDate"
+              ? t("Date not recognised. Say a day, month and year, or type the date.")
+              : `${t("Please choose a listed option:")} ${options.map(t).join(", ")}.`);
+            return;
+          }
+          accepted = true;
+          updateField(field, value);
+          setStatus(`${t(fieldLabels[field])}: ${Array.isArray(value) ? value.join(", ") : value || t("Skipped")}`);
         };
-
-        recognition.onerror = () => {
-          setStatus(
-            t("I couldn't hear that. Please try again or type your answer."),
-          );
+        recognition.onerror = (event) => {
+          fail(event.error === "not-allowed" || event.error === "service-not-allowed"
+            ? t("Microphone access was denied. Allow microphone access in your browser or type your answers.")
+            : t("I couldn't hear that. Please try again or type your answer."));
         };
-
         recognition.onend = () => {
-          window.setTimeout(() => ask(index + 1), 300);
+          if (!isCurrent()) return;
+          currentSession.recognition = null;
+          if (accepted) ask(index + 1);
+          else fail(t("I couldn't hear that. Please try again or type your answer."));
         };
+        try { recognition.start(); }
+        catch { fail(t("Could not start the microphone. Please try again or type your answers.")); }
+      }
 
-        recognition.start();
-      };
-
+      if (!window.speechSynthesis) { listen(); return; }
+      const utterance = new SpeechSynthesisUtterance(prompt);
+      utteranceRef.current = utterance;
+      utterance.lang = language === "hi" ? "hi-IN" : "en-IN";
+      utterance.onend = listen;
+      utterance.onerror = () => { if (isCurrent()) listen(); };
       window.speechSynthesis.speak(utterance);
-    };
-
+    }
     ask(0);
   }
 
   function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
-
-    if (
-      !window.confirm(
-        t("Submit this form? Please make sure the answers are correct."),
-      )
-    ) {
+    stopVoice("");
+    const missing: Partial<Record<Field, string>> = {};
+    for (const field of ["entityName", "entityType", "bankName", "assignedBy", "requestDate"] as const) {
+      if (!form[field].trim()) missing[field] = t("This field is required.");
+    }
+    if (!form.services.length) missing.services = t("Select at least one service.");
+    if (form.requestDate && !parseSpokenDate(form.requestDate)) missing.requestDate = t("Enter a valid date.");
+    setErrors(missing);
+    const firstError = fieldOrder.find((field) => missing[field]);
+    if (firstError) {
+      document.getElementById(`${id}-${firstError}`)?.focus();
+      setStatus(t("Please complete the required fields."));
       return;
     }
+    if (!window.confirm(t("Submit this form? Please make sure the answers are correct."))) return;
+    setSubmitted({ ...form, services: [...form.services] });
+    setStatus(t("Request prepared locally. It has not been sent to a server."));
+  }
 
-    setSubmitted(form);
-    setStatus(t("Form submitted successfully."));
+  function renderField(field: Exclude<Field, "services">, required = false) {
+    const options = field === "entityType" ? entityTypes : field === "bankName" ? Object.keys(bankBranches)
+      : field === "branchName" ? bankBranches[form.bankName] ?? [] : null;
+    const suggestions = field === "tsp" ? ["iMoneyPay", "Other"]
+      : field === "assignedBy" ? ["Self", "Relationship Manager", "Operations Team"] : null;
+    const disabled = field === "branchName" && !form.bankName;
+    const inputProps = {
+      id: `${id}-${field}`, name: field, value: form[field], disabled,
+      "aria-required": required, "aria-invalid": !!errors[field],
+      "aria-describedby": errors[field] ? `${id}-${field}-error` : disabled ? `${id}-branch-hint` : undefined,
+      onChange: (event: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => updateField(field, event.target.value),
+    };
+    return (
+      <div className={`voice-request__field ${activeField === field ? "voice-request__field--active" : ""}`} key={field}>
+        <div className="voice-request__label-row">
+          <label htmlFor={inputProps.id}>{t(fieldLabels[field])}{required && <span className="voice-request__required"> *</span>}</label>
+          <button type="button" className="voice-request__speak" disabled={disabled || activeField !== null} onClick={() => startVoice([field])} aria-label={`${t("Speak")} ${t(fieldLabels[field])}`} title={`${t("Speak")} ${t(fieldLabels[field])}`}>{t("Speak")}</button>
+        </div>
+        {options ? <select {...inputProps}><option value="">{t("Select an option")}</option>{options.map((option) => <option key={option} value={option}>{t(option)}</option>)}</select>
+          : <input {...inputProps} list={suggestions ? `${id}-${field}-options` : undefined} type={field === "requestDate" ? "date" : "text"} maxLength={field === "requestDate" ? undefined : 150} placeholder={field === "entityName" ? t("Enter entity name") : undefined} />}
+        {suggestions && <datalist id={`${id}-${field}-options`}>{suggestions.map((option) => <option key={option} value={t(option)} />)}</datalist>}
+        {field === "bankName" && <p className="voice-request__hint">{t("Sample bank and branch data")}</p>}
+        {disabled && <p id={`${id}-branch-hint`} className="voice-request__hint">{t("Branch options load once a bank is selected.")}</p>}
+        {errors[field] && <p id={`${id}-${field}-error`} className="voice-request__error">{errors[field]}</p>}
+      </div>
+    );
   }
 
   return (
-    <main className="mx-auto w-full max-w-xl p-6">
-      <h1 className="mb-2 text-2xl font-bold">{t("Voice Request Form")}</h1>
-      <p className="mb-5 text-gray-600">
-        {t(
-          "Use voice entry or fill in the fields manually. Review your answers before submitting.",
-        )}
-      </p>
-
-      <button
-        type="button"
-        onClick={startVoiceForm}
-        className="mb-4 rounded bg-blue-700 px-4 py-2 text-white"
-      >
-        {t("Start voice entry")}
-      </button>
-
-      <p aria-live="polite" className="mb-4 min-h-6 text-sm text-gray-700">
-        {status}
-      </p>
-
-      <form onSubmit={handleSubmit} className="space-y-4">
-        <label className="block">
-          <span className="mb-1 block font-medium">{t("Name *")}</span>
-          <input
-            required
-            value={form.name}
-            onChange={(event) => updateField("name", event.target.value)}
-            className="w-full rounded border p-2"
-          />
-        </label>
-
-        <label className="block">
-          <span className="mb-1 block font-medium">{t("Request date *")}</span>
-          <input
-            required
-            type="date"
-            value={form.requestDate}
-            onChange={(event) => updateField("requestDate", event.target.value)}
-            className="w-full rounded border p-2"
-          />
-        </label>
-
-        <label className="block">
-          <span className="mb-1 block font-medium">{t("Category *")}</span>
-          <select
-            required
-            value={form.category}
-            onChange={(event) => updateField("category", event.target.value)}
-            className="w-full rounded border p-2"
-          >
-            <option value="">{t("Select a category")}</option>
-            <option value="Access">{t("Access")}</option>
-            <option value="Hardware">{t("Hardware")}</option>
-            <option value="Software">{t("Software")}</option>
-          </select>
-        </label>
-
-        <label className="block">
-          <span className="mb-1 block font-medium">{t("Description *")}</span>
-          <textarea
-            required
-            minLength={5}
-            maxLength={500}
-            value={form.description}
-            onChange={(event) => updateField("description", event.target.value)}
-            className="w-full rounded border p-2"
-            rows={4}
-          />
-        </label>
-
-        <button
-          type="submit"
-          className="rounded bg-green-700 px-4 py-2 text-white"
-        >
-          {t("Review and submit")}
-        </button>
-      </form>
-
-      {submitted && (
-        <section
-          className="mt-6 rounded border bg-gray-50 p-4"
-          aria-live="polite"
-        >
-          <h2 className="mb-2 font-bold">{t("Submitted form")}</h2>
-          <pre className="whitespace-pre-wrap text-sm">
-            {JSON.stringify(submitted, null, 2)}
-          </pre>
+    <section className="voice-request" aria-labelledby={`${id}-title`}>
+      <header className="voice-request__header">
+        <div><h2 id={`${id}-title`}>{t("Add New Request")}</h2><p>{t("Entity, bank and assignment details")}</p></div>
+        <div className="voice-request__voice-actions">
+          {activeField !== null ? <button type="button" className="voice-request__button voice-request__button--secondary" onClick={() => stopVoice()}>{t("Stop voice entry")}</button>
+            : <button type="button" className="voice-request__button voice-request__button--primary" onClick={() => startVoice(fieldOrder)}>{t("Start voice entry")}</button>}
+          {retryFields.length > 0 && activeField === null && <button type="button" className="voice-request__button voice-request__button--secondary" onClick={() => startVoice(retryFields)}>{t("Retry voice entry")}</button>}
+        </div>
+      </header>
+      <p role="status" className="voice-request__status">{status}</p>
+      <form noValidate onSubmit={handleSubmit} className="voice-request__form">
+        <section className="voice-request__section" aria-labelledby={`${id}-entity-title`}>
+          <h3 id={`${id}-entity-title`} className="voice-request__section-title">
+            <span>1</span>{t("Entity Information")}
+          </h3>
+          <div className="voice-request__grid">
+            {renderField("entityName", true)}
+            {renderField("entityType", true)}
+          </div>
+          <div className="voice-request__grid">
+            {renderField("tsp")}
+            <div className={`voice-request__field ${activeField === "services" ? "voice-request__field--active" : ""}`}>
+              <div className="voice-request__label-row"><span id={`${id}-services-label`}>{t("Services")}<span className="voice-request__required"> *</span></span><button type="button" className="voice-request__speak" disabled={activeField !== null} onClick={() => startVoice(["services"])} aria-label={`${t("Speak")} ${t("Services")}`} title={`${t("Speak")} ${t("Services")}`}>{t("Speak")}</button></div>
+              <div id={`${id}-services`} role="group" tabIndex={-1} aria-labelledby={`${id}-services-label`} aria-describedby={errors.services ? `${id}-services-error` : undefined} aria-invalid={!!errors.services} className="voice-request__services">
+                {serviceOptions.map((service) => <label key={service}><input type="checkbox" name="services" value={service} checked={form.services.includes(service)} onChange={(event) => updateField("services", event.target.checked ? [...form.services, service] : form.services.filter((value) => value !== service))} />{t(service)}</label>)}
+              </div>
+              {errors.services && <p id={`${id}-services-error`} className="voice-request__error">{errors.services}</p>}
+            </div>
+          </div>
         </section>
-      )}
-    </main>
+        <section className="voice-request__section" aria-labelledby={`${id}-bank-title`}>
+          <h3 id={`${id}-bank-title`} className="voice-request__section-title">
+            <span>2</span>{t("Bank Information")}
+          </h3>
+          <div className="voice-request__grid">
+            {renderField("bankName", true)}
+            {renderField("branchName")}
+          </div>
+        </section>
+        <section className="voice-request__section" aria-labelledby={`${id}-assignment-title`}>
+          <h3 id={`${id}-assignment-title`} className="voice-request__section-title">
+            <span>3</span>{t("Assignment Information")}
+          </h3>
+          <div className="voice-request__grid">
+            {renderField("assignedBy", true)}
+            {renderField("requestDate", true)}
+          </div>
+        </section>
+        <div className="voice-request__actions">
+          <button type="button" className="voice-request__button voice-request__button--secondary" onClick={() => { stopVoice(""); formRef.current = emptyForm; setForm(emptyForm); setErrors({}); setSubmitted(null); setRetryFields([]); }}>{t("Cancel")}</button>
+          <button type="submit" className="voice-request__button voice-request__button--primary" disabled={activeField !== null}>{t("Submit Request")}</button>
+        </div>
+      </form>
+      {submitted && <section className="voice-request__summary" aria-labelledby={`${id}-summary`}><h3 id={`${id}-summary`}>{t("Request preview")}</h3><dl>{fieldOrder.map((field) => <div key={field}><dt>{t(fieldLabels[field])}</dt><dd>{Array.isArray(submitted[field]) ? submitted[field].map(t).join(", ") : submitted[field] || t("Not provided")}</dd></div>)}</dl></section>}
+    </section>
   );
 }
