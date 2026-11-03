@@ -1,6 +1,5 @@
 import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
-import BackToTop from "./components/back-to-top";
 import { LanguageProvider } from "./components/language-provider";
 import "./globals.css";
 import "./components/voice-form.css";
@@ -16,9 +15,9 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "iMoneyPay | Digital Payments for Bharat Businesses",
+  title: "Voice Form",
   description:
-    "Accept customer payments, manage business payouts and reward the people who move you forward with iMoneyPay.",
+    "Create a request using voice entry or manual input.",
 };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {
@@ -27,9 +26,8 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
       lang="en"
       className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
     >
-      <body className="min-h-full flex flex-col">
+      <body className="voice-form-only">
         <LanguageProvider>
-          <BackToTop />
           {children}
         </LanguageProvider>
       </body>

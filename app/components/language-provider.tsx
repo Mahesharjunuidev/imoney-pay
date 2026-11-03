@@ -8,7 +8,6 @@ import {
   useMemo,
   useSyncExternalStore,
 } from "react";
-import { usePathname } from "next/navigation";
 import english from "../messages/en.json";
 import hindi from "../messages/hi.json";
 
@@ -23,27 +22,8 @@ type LanguageContextValue = {
 const messages: Record<Language, Messages> = { en: english, hi: hindi };
 const LanguageContext = createContext<LanguageContextValue | null>(null);
 const languageChangeEvent = "imoneypay-language-change";
-const titleByRoute: Record<string, string> = {
-  "/": "iMoneyPay | Digital Payments for Bharat Businesses",
-  "/payment-solutions": "Payment solutions for businesses | iMoneyPay",
-  "/cards-wallets": "Gift Cards, Prepaid Cards & Wallet | iMoneyPay",
-  "/imoneypay-app": "iMoneyPay App | Wallet, UPI & Everyday Payments",
-  "/about": "About iMoneyPay | Digital Payments Since 2017",
-  "/contact": "Contact iMoneyPay | Merchant Enquiries & Support",
-};
-const descriptionByRoute: Record<string, string> = {
-  "/": "Accept customer payments, manage business payouts and reward the people who move you forward with iMoneyPay.",
-  "/payment-solutions":
-    "Collect customer payments and manage business payouts with iMoneyPay payment solutions.",
-  "/cards-wallets":
-    "Explore iMoneyPay corporate gift cards, reloadable prepaid cards and everyday wallet services.",
-  "/imoneypay-app":
-    "Manage your iMoney Wallet, @imoney UPI ID, prepaid card, money transfers and bill payments in one app.",
-  "/about":
-    "Learn about iMoneyPay's regulated payment services, security commitments and support for businesses across India.",
-  "/contact":
-    "Contact iMoneyPay about merchant onboarding, pricing, payment solutions or customer support.",
-};
+const pageTitle = "Voice Form";
+const pageDescription = "Create a request using voice entry or manual input.";
 
 function subscribeToLanguageChanges(onChange: () => void) {
   window.addEventListener("storage", onChange);
@@ -68,7 +48,6 @@ export function LanguageProvider({
 }: {
   readonly children: React.ReactNode;
 }) {
-  const pathname = usePathname();
   const language = useSyncExternalStore(
     subscribeToLanguageChanges,
     getLanguageSnapshot,
@@ -79,16 +58,14 @@ export function LanguageProvider({
   useEffect(() => {
     document.documentElement.lang = language;
     document.title =
-      dictionary[titleByRoute[pathname] as keyof Messages] ??
-      dictionary[titleByRoute["/"] as keyof Messages];
+      dictionary[pageTitle as keyof Messages] ?? pageTitle;
     document
       .querySelector('meta[name="description"]')
       ?.setAttribute(
         "content",
-        dictionary[descriptionByRoute[pathname] as keyof Messages] ??
-          dictionary[descriptionByRoute["/"] as keyof Messages],
+        dictionary[pageDescription as keyof Messages] ?? pageDescription,
       );
-  }, [dictionary, language, pathname]);
+  }, [dictionary, language]);
 
   const persistLanguage = useCallback((nextLanguage: Language) => {
     window.localStorage.setItem("imoneypay-language", nextLanguage);
