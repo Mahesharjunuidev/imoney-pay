@@ -20,9 +20,7 @@ export const metadata: Metadata = {
     "Accept customer payments, manage business payouts and reward the people who move you forward with iMoneyPay.",
 };
 
-export default function RootLayout({
-  children,
-}: LayoutProps<"/">) {
+export default function RootLayout({ children }: LayoutProps<"/">) {
   return (
     <html
       lang="en"

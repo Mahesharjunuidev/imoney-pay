@@ -1,6 +1,13 @@
 "use client";
 
-import { createContext, useCallback, useContext, useEffect, useMemo, useSyncExternalStore } from "react";
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useSyncExternalStore,
+} from "react";
 import { usePathname } from "next/navigation";
 import english from "../messages/en.json";
 import hindi from "../messages/hi.json";
@@ -26,11 +33,16 @@ const titleByRoute: Record<string, string> = {
 };
 const descriptionByRoute: Record<string, string> = {
   "/": "Accept customer payments, manage business payouts and reward the people who move you forward with iMoneyPay.",
-  "/payment-solutions": "Collect customer payments and manage business payouts with iMoneyPay payment solutions.",
-  "/cards-wallets": "Explore iMoneyPay corporate gift cards, reloadable prepaid cards and everyday wallet services.",
-  "/imoneypay-app": "Manage your iMoney Wallet, @imoney UPI ID, prepaid card, money transfers and bill payments in one app.",
-  "/about": "Learn about iMoneyPay's regulated payment services, security commitments and support for businesses across India.",
-  "/contact": "Contact iMoneyPay about merchant onboarding, pricing, payment solutions or customer support.",
+  "/payment-solutions":
+    "Collect customer payments and manage business payouts with iMoneyPay payment solutions.",
+  "/cards-wallets":
+    "Explore iMoneyPay corporate gift cards, reloadable prepaid cards and everyday wallet services.",
+  "/imoneypay-app":
+    "Manage your iMoney Wallet, @imoney UPI ID, prepaid card, money transfers and bill payments in one app.",
+  "/about":
+    "Learn about iMoneyPay's regulated payment services, security commitments and support for businesses across India.",
+  "/contact":
+    "Contact iMoneyPay about merchant onboarding, pricing, payment solutions or customer support.",
 };
 
 function subscribeToLanguageChanges(onChange: () => void) {
@@ -51,18 +63,31 @@ function getServerLanguageSnapshot(): Language {
   return "en";
 }
 
-export function LanguageProvider({ children }: { readonly children: React.ReactNode }) {
+export function LanguageProvider({
+  children,
+}: {
+  readonly children: React.ReactNode;
+}) {
   const pathname = usePathname();
-  const language = useSyncExternalStore(subscribeToLanguageChanges, getLanguageSnapshot, getServerLanguageSnapshot);
+  const language = useSyncExternalStore(
+    subscribeToLanguageChanges,
+    getLanguageSnapshot,
+    getServerLanguageSnapshot,
+  );
   const dictionary = messages[language];
 
   useEffect(() => {
     document.documentElement.lang = language;
-    document.title = dictionary[titleByRoute[pathname] as keyof Messages] ?? dictionary[titleByRoute["/"] as keyof Messages];
-    document.querySelector('meta[name="description"]')?.setAttribute(
-      "content",
-      dictionary[descriptionByRoute[pathname] as keyof Messages] ?? dictionary[descriptionByRoute["/"] as keyof Messages],
-    );
+    document.title =
+      dictionary[titleByRoute[pathname] as keyof Messages] ??
+      dictionary[titleByRoute["/"] as keyof Messages];
+    document
+      .querySelector('meta[name="description"]')
+      ?.setAttribute(
+        "content",
+        dictionary[descriptionByRoute[pathname] as keyof Messages] ??
+          dictionary[descriptionByRoute["/"] as keyof Messages],
+      );
   }, [dictionary, language, pathname]);
 
   const persistLanguage = useCallback((nextLanguage: Language) => {
@@ -70,9 +95,12 @@ export function LanguageProvider({ children }: { readonly children: React.ReactN
     window.dispatchEvent(new Event(languageChangeEvent));
   }, []);
 
-  const translate = useCallback((sourceText: string) => {
-    return dictionary[sourceText as keyof Messages] ?? sourceText;
-  }, [dictionary]);
+  const translate = useCallback(
+    (sourceText: string) => {
+      return dictionary[sourceText as keyof Messages] ?? sourceText;
+    },
+    [dictionary],
+  );
   const contextValue = useMemo(
     () => ({ language, setLanguage: persistLanguage, t: translate }),
     [language, persistLanguage, translate],
