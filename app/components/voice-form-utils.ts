@@ -1,3 +1,20 @@
+export type RequestData = {
+  entityName: string;
+  entityType: string;
+  tsp: string;
+  services: string[];
+  bankName: string;
+  branchName: string;
+  assignedBy: string;
+  requestDate: string;
+};
+export type RequestField = keyof RequestData;
+export const fieldLabels: Record<RequestField, string> = {
+  entityName: "Entity Name", entityType: "Entity Type", tsp: "TSP", services: "Services",
+  bankName: "Bank Name", branchName: "Branch Name", assignedBy: "Task Assigned By", requestDate: "Date",
+};
+export const fieldOrder = Object.keys(fieldLabels) as RequestField[];
+
 export const entityTypes = ["Company", "Partnership", "Sole Proprietorship", "Trust", "NGO"];
 export const serviceOptions = ["API", "CBS", "Payments"];
 export const bankBranches: Record<string, string[]> = {
@@ -16,11 +33,62 @@ export function matchOption(answer: string, options: readonly string[]): string 
   return options.find((option) => normalize(option) === normalized) ?? null;
 }
 
+const fieldAliases: [RequestField, string[]][] = [
+  ["entityName", ["entity name"]],
+  ["entityType", ["entity type"]],
+  ["tsp", ["tsp", "t s p", "technical service provider"]],
+  ["services", ["services", "service"]],
+  ["bankName", ["bank name", "bank"]],
+  ["branchName", ["branch name", "branch"]],
+  ["assignedBy", ["task assigned by", "assigned by"]],
+  ["requestDate", ["request date", "date"]],
+];
+
+export function cleanTranscript(transcript: string): string {
+  const text = transcript.trim();
+  let end = text.length;
+  while (end > 0 && ".!?".includes(text[end - 1])) end -= 1;
+  return text.slice(0, end).trim();
+}
+
+export function parseFieldCommand(transcript: string): { field: RequestField; answer: string | null } | null {
+  const text = cleanTranscript(transcript);
+  for (const [field, aliases] of fieldAliases) {
+    for (const alias of aliases) {
+      if (normalize(text) === normalize(alias)) return { field, answer: null };
+      const fieldPattern = alias.replaceAll(" ", String.raw`\s+`);
+      const pattern = new RegExp(String.raw`^${fieldPattern}(?:\s*[:,]\s*|\s+)(.+)$`, "i");
+      const match = pattern.exec(text);
+      if (match) return { field, answer: match[1].trim() };
+    }
+  }
+  return null;
+}
+
+export function parseFieldAnswer(field: RequestField, transcript: string, values: RequestData): string | string[] | null {
+  const answer = cleanTranscript(transcript);
+  if (!answer || answer.length > 150) return null;
+  if ((field === "tsp" || field === "branchName") && /^(skip|none|not applicable)$/i.test(answer)) return "";
+  if (field === "requestDate") return parseSpokenDate(answer);
+  if (field === "services") {
+    const services = parseServices(answer);
+    return services.length ? services : null;
+  }
+  if (field === "entityType") return matchOption(answer, entityTypes);
+  if (field === "bankName") {
+    const aliases: Record<string, string> = { sbi: "State Bank of India", hdfc: "HDFC Bank", icici: "ICICI Bank" };
+    const bank = aliases[normalize(answer)] ?? answer;
+    return matchOption(bank, Object.keys(bankBranches));
+  }
+  if (field === "branchName") return matchOption(answer, bankBranches[values.bankName] ?? []);
+  return answer;
+}
+
 export function parseServices(answer: string): string[] {
   const normalized = normalize(answer.replace(/\b(and|plus)\b/gi, ""));
   if (["all", "allservices", "allthree"].includes(normalized)) return [...serviceOptions];
   if (!/^(api|cbs|payments)+$/.test(normalized)) return [];
-  const spoken = normalized.match(/api|cbs|payments/g) ?? [];
+  const spoken: readonly string[] = normalized.match(/api|cbs|payments/g) ?? [];
   return serviceOptions.filter((option) => spoken.includes(normalize(option)));
 }
 

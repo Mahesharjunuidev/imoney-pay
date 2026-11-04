@@ -2,22 +2,15 @@
 
 import { useEffect, useId, useRef, useState } from "react";
 import { useLanguage } from "./language-provider";
-import { bankBranches, entityTypes, matchOption, parseServices, parseSpokenDate, serviceOptions } from "./voice-form-utils";
+import { bankBranches, entityTypes, fieldLabels, fieldOrder, matchOption, parseServices, parseSpokenDate, serviceOptions, type RequestData, type RequestField } from "./voice-form-utils";
+import { DirectVoiceArchive, useDirectVoiceEntry } from "./direct-voice-entry";
 
-type RequestData = {
-  entityName: string;
-  entityType: string;
-  tsp: string;
-  services: string[];
-  bankName: string;
-  branchName: string;
-  assignedBy: string;
-  requestDate: string;
-};
-type Field = keyof RequestData;
-type RecognitionEvent = { results: ArrayLike<{ isFinal: boolean; [index: number]: { transcript: string } }> };
+type Field = RequestField;
+type EntryMode = "guided" | "direct";
+type RecognitionEvent = { resultIndex?: number; results: ArrayLike<{ isFinal: boolean; [index: number]: { transcript: string } }> };
 type Recognition = {
   lang: string;
+  continuous: boolean;
   interimResults: boolean;
   onresult: ((event: RecognitionEvent) => void) | null;
   onerror: ((event: { error: string }) => void) | null;
@@ -37,13 +30,26 @@ const emptyForm: RequestData = {
   entityName: "", entityType: "", tsp: "", services: [],
   bankName: "", branchName: "", assignedBy: "", requestDate: "",
 };
-const fieldLabels: Record<Field, string> = {
-  entityName: "Entity Name", entityType: "Entity Type", tsp: "TSP", services: "Services",
-  bankName: "Bank Name", branchName: "Branch Name", assignedBy: "Task Assigned By", requestDate: "Date",
-};
-const fieldOrder = Object.keys(fieldLabels) as Field[];
 
 export default function VoiceForm() {
+  const { t } = useLanguage();
+  const [mode, setMode] = useState<EntryMode>("guided");
+  return (
+    <div className="voice-request">
+      <div className="voice-request__brand" aria-label={t("Voice Form")}>
+        <span aria-hidden="true">VF</span>
+        <h1>{t("Voice Form")}</h1>
+      </div>
+      <nav className="voice-request__navigation" aria-label={t("Form options")}>
+        <button type="button" aria-current={mode === "guided" ? "page" : undefined} onClick={() => setMode("guided")}>{t("Option 1")}</button>
+        <button type="button" aria-current={mode === "direct" ? "page" : undefined} onClick={() => setMode("direct")}>{t("Option 2")}</button>
+      </nav>
+      <RequestForm key={mode} mode={mode} />
+    </div>
+  );
+}
+
+function RequestForm({ mode }: { readonly mode: EntryMode }) {
   const { language, t } = useLanguage();
   const id = useId();
   const [form, setForm] = useState<RequestData>(emptyForm);
@@ -58,6 +64,11 @@ export default function VoiceForm() {
   const successDialog = useRef<HTMLDialogElement | null>(null);
   const session = useRef<{ recognition: Recognition | null; cancelled: boolean } | null>(null);
   const utteranceRef = useRef<SpeechSynthesisUtterance | null>(null);
+  const direct = useDirectVoiceEntry({
+    enabled: mode === "direct", idPrefix: id, values: formRef,
+    updateField, validate: validateForm, setStatus,
+  });
+  const highlightedField = mode === "direct" ? direct.selectedField : activeField;
 
   useEffect(() => {
     return () => {
@@ -92,6 +103,7 @@ export default function VoiceForm() {
   }
 
   function stopVoice(message = t("Voice entry stopped.")) {
+    if (mode === "direct") { direct.stop(message); return; }
     if (session.current) {
       session.current.cancelled = true;
       session.current.recognition?.abort();
@@ -313,6 +325,7 @@ export default function VoiceForm() {
 
   function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (mode === "direct") { direct.finish(); return; }
     stopVoice("");
     submitRequest();
   }
@@ -323,7 +336,7 @@ export default function VoiceForm() {
     const suggestions = field === "tsp" ? ["Other"]
       : field === "assignedBy" ? ["Self", "Relationship Manager", "Operations Team"] : null;
     const branchDisabled = field === "branchName" && !form.bankName;
-    const disabled = branchDisabled || activeField === "confirmation";
+    const disabled = branchDisabled || activeField === "confirmation" || direct.isStarting || direct.isSaving;
     const inputProps = {
       id: `${id}-${field}`, name: field, value: form[field], disabled,
       "aria-required": required, "aria-invalid": !!errors[field],
@@ -331,7 +344,7 @@ export default function VoiceForm() {
       onChange: (event: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => updateField(field, event.target.value),
     };
     return (
-      <div className={`voice-request__field ${activeField === field ? "voice-request__field--active" : ""}`} key={field}>
+      <div className={`voice-request__field ${highlightedField === field ? "voice-request__field--active" : ""}`} key={field}>
         <div className="voice-request__label-row">
           <label htmlFor={inputProps.id}>{t(fieldLabels[field])}{required && <span className="voice-request__required"> *</span>}</label>
         </div>
@@ -346,18 +359,22 @@ export default function VoiceForm() {
   }
 
   return (
-    <section className="voice-request" aria-labelledby={`${id}-title`}>
-      <div className="voice-request__brand" aria-label={t("Voice Form")}>
-        <span aria-hidden="true">VF</span>
-        <h1>{t("Voice Form")}</h1>
-      </div>
+    <section aria-labelledby={`${id}-title`}>
       <header className="voice-request__header">
         <div><h2 id={`${id}-title`}>{t("Add New Request")}</h2><p>{t("Entity, bank and assignment details")}</p></div>
         <div className="voice-request__voice-actions">
-          {activeField !== null ? <button type="button" className="voice-request__button voice-request__button--secondary" onClick={() => stopVoice()}>{t("Stop voice entry")}</button>
-            : <button type="button" className="voice-request__button voice-request__button--primary" onClick={() => startVoice(fieldOrder)}>{t("Start voice entry")}</button>}
-          {retryFields.length > 0 && activeField === null && <button type="button" className="voice-request__button voice-request__button--secondary" onClick={() => startVoice(retryFields)}>{t("Retry voice entry")}</button>}
-          {retryConfirmation && activeField === null && <button type="button" className="voice-request__button voice-request__button--secondary" onClick={() => startVoice([])}>{t("Retry confirmation")}</button>}
+          {mode === "guided" && <>
+            {activeField !== null ? <button type="button" className="voice-request__button voice-request__button--secondary" onClick={() => stopVoice()}>{t("Stop voice entry")}</button>
+              : <button type="button" className="voice-request__button voice-request__button--primary" onClick={() => startVoice(fieldOrder)}>{t("Start voice entry")}</button>}
+            {retryFields.length > 0 && activeField === null && <button type="button" className="voice-request__button voice-request__button--secondary" onClick={() => startVoice(retryFields)}>{t("Retry voice entry")}</button>}
+            {retryConfirmation && activeField === null && <button type="button" className="voice-request__button voice-request__button--secondary" onClick={() => startVoice([])}>{t("Retry confirmation")}</button>}
+          </>}
+          {mode === "direct" && <>
+            {direct.isRecording && <span className="voice-request__recording-indicator" role="status">{t("Recording")}</span>}
+            {direct.isRecording || direct.isStarting
+              ? <button type="button" className="voice-request__button voice-request__button--secondary" onClick={() => direct.stop()}>{t("Stop voice entry")}</button>
+              : <button type="button" className="voice-request__button voice-request__button--primary" disabled={direct.isSaving} onClick={() => { void direct.start(); }}>{t("Start voice entry")}</button>}
+          </>}
         </div>
       </header>
       <p role="status" className="voice-request__status">{status}</p>
@@ -372,10 +389,10 @@ export default function VoiceForm() {
           </div>
           <div className="voice-request__grid">
             {renderField("tsp")}
-            <div className={`voice-request__field ${activeField === "services" ? "voice-request__field--active" : ""}`}>
+            <div className={`voice-request__field ${highlightedField === "services" ? "voice-request__field--active" : ""}`}>
               <div className="voice-request__label-row"><span id={`${id}-services-label`}>{t("Services")}<span className="voice-request__required"> *</span></span></div>
-              <div id={`${id}-services`} role="group" tabIndex={-1} aria-labelledby={`${id}-services-label`} aria-describedby={errors.services ? `${id}-services-error` : undefined} aria-invalid={!!errors.services} className="voice-request__services">
-                {serviceOptions.map((service) => <label key={service}><input type="checkbox" name="services" value={service} disabled={activeField === "confirmation"} checked={form.services.includes(service)} onChange={(event) => updateField("services", event.target.checked ? [...form.services, service] : form.services.filter((value) => value !== service))} />{t(service)}</label>)}
+              <div id={`${id}-services`} role="group" tabIndex={-1} aria-labelledby={`${id}-services-label`} aria-describedby={errors.services ? `${id}-services-error` : undefined} className="voice-request__services">
+                {serviceOptions.map((service) => <label key={service}><input type="checkbox" name="services" value={service} aria-invalid={!!errors.services} disabled={activeField === "confirmation" || direct.isStarting || direct.isSaving} checked={form.services.includes(service)} onChange={(event) => updateField("services", event.target.checked ? [...form.services, service] : form.services.filter((value) => value !== service))} />{t(service)}</label>)}
               </div>
               {errors.services && <p id={`${id}-services-error`} className="voice-request__error">{errors.services}</p>}
             </div>
@@ -400,8 +417,9 @@ export default function VoiceForm() {
           </div>
         </section>
         <div className="voice-request__actions">
-          <button type="button" className="voice-request__button voice-request__button--secondary" onClick={() => { stopVoice(""); formRef.current = emptyForm; setForm(emptyForm); setErrors({}); setSubmitted(null); setRetryFields([]); setRetryConfirmation(false); setShowSuccess(false); }}>{t("Cancel")}</button>
-          <button type="submit" className="voice-request__button voice-request__button--primary" disabled={activeField !== null}>{t("Submit Request")}</button>
+          <button type="button" className="voice-request__button voice-request__button--secondary" disabled={direct.isSaving} onClick={() => { if (mode === "direct") direct.discard(); else stopVoice(""); formRef.current = emptyForm; setForm(emptyForm); setErrors({}); setSubmitted(null); setRetryFields([]); setRetryConfirmation(false); setShowSuccess(false); }}>{t("Cancel")}</button>
+          {mode === "guided" && <button type="submit" className="voice-request__button voice-request__button--primary" disabled={activeField !== null}>{t("Submit Request")}</button>}
+          {mode === "direct" && <button type="submit" className="voice-request__button voice-request__button--primary" disabled={direct.isStarting || direct.isSaving}>{direct.isSaving ? t("Saving...") : t("Finish and save")}</button>}
         </div>
       </form>
       <dialog ref={successDialog} className="voice-request__success-dialog" aria-labelledby={`${id}-success-title`} aria-describedby={`${id}-success-detail`} onClose={() => setShowSuccess(false)} onCancel={() => setShowSuccess(false)}>
@@ -410,7 +428,8 @@ export default function VoiceForm() {
         <p id={`${id}-success-detail`}>{t("Your request has been recorded in this page. It has not been sent to a server.")}</p>
         <button type="button" className="voice-request__button voice-request__button--primary" onClick={() => setShowSuccess(false)} autoFocus>{t("Done")}</button>
       </dialog>
-      {submitted && <section className="voice-request__summary" aria-labelledby={`${id}-summary`}><h3 id={`${id}-summary`}>{t("Request preview")}</h3><dl>{fieldOrder.map((field) => <div key={field}><dt>{t(fieldLabels[field])}</dt><dd>{Array.isArray(submitted[field]) ? submitted[field].map(t).join(", ") : submitted[field] || t("Not provided")}</dd></div>)}</dl></section>}
+      {submitted && <section className="voice-request__summary" aria-labelledby={`${id}-summary`}><div className="voice-request__output-heading"><h3 id={`${id}-summary`}>{t("Request preview")}</h3><button type="button" className="voice-request__button voice-request__button--danger" onClick={() => { if (window.confirm(t("Delete this request preview? Your editable form will not be cleared."))) { setSubmitted(null); setShowSuccess(false); setStatus(t("Request preview deleted.")); } }}>{t("Delete output")}</button></div><dl>{fieldOrder.map((field) => <div key={field}><dt>{t(fieldLabels[field])}</dt><dd>{Array.isArray(submitted[field]) ? submitted[field].map(t).join(", ") : submitted[field] || t("Not provided")}</dd></div>)}</dl></section>}
+      {mode === "direct" && <DirectVoiceArchive records={direct.records} storageError={direct.storageError} onDelete={direct.removeRecord} />}
     </section>
   );
 }
