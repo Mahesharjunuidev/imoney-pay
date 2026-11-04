@@ -227,7 +227,7 @@ export default function PaymentSolutionsPage() {
               <div className="dev-visual" aria-hidden="true">
                 <span className="dev-bracket">&lt;/&gt;</span>
                 <span className="dev-pill dev-pill-one">POST /payments</span>
-                <span className="dev-pill dev-pill-two">● 200 OK</span>
+                <span className="dev-pill dev-pill-two">● 200 OK  helo</span>
                 <span className="dev-line dev-line-one" />
                 <span className="dev-line dev-line-two" />
                 <span className="dev-line dev-line-three" />
